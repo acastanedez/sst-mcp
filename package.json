@@ -1,0 +1,22 @@
+{
+  "name": "sst-mcp",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx start.ts"
+  },
+  "dependencies": {
+    "chokidar": "^4.0.3",
+    "ps-tree": "^1.2.0",
+    "strip-ansi": "^7.1.0",
+    "yargs": "^18.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/ps-tree": "^1.1.6",
+    "@types/yargs": "^17.0.33",
+    "tsx": "^4.20.1",
+    "typescript": "^5.8.3"
+  }
+}
