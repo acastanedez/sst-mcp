@@ -7,6 +7,7 @@ import psTree from 'ps-tree';
 import path from 'path';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
+import fs from 'fs';
 
 // Parse command line arguments for project root
 const argv = yargs(hideBin(process.argv))
@@ -17,10 +18,10 @@ const argv = yargs(hideBin(process.argv))
     default: '.',
   })
   .help()
-  .argv;
+  .parseSync();
 
 const projectRoot = path.resolve(argv.projectRoot as string);
-const logFilePath = path.join(projectRoot, '.sst/local-app.log');
+const logFilePath = path.join(projectRoot, '.sst/sst-mcp.log');
 const envFilePath = path.join(projectRoot, 'env.sh');
 
 let childProcess: ChildProcess | null = null;
@@ -72,7 +73,18 @@ async function startProcess() {
     
     console.log('Starting SST dev process...');
     
-    childProcess = spawn('pnpm', ['sst', 'dev', '--mode=mono'], {
+    // Check for existing SST server before starting
+    const sstDir = path.join(projectRoot, '.sst');
+    if (fs.existsSync(sstDir)) {
+        const files = fs.readdirSync(sstDir);
+        const serverFile = files.find(f => f.endsWith('.server'));
+        if (serverFile) {
+            console.error(`Error: Detected running SST server (file: ${path.join(sstDir, serverFile)}). Please stop the running SST server before starting the MCP server.`);
+            process.exit(1);
+        }
+    }
+
+    childProcess = spawn('npx', ['sst', 'dev', '--mode=mono'], {
         stdio: ['pipe', 'pipe', 'pipe'],
         cwd: projectRoot,
         env: {
@@ -80,6 +92,16 @@ async function startProcess() {
             ...env,
         },
     });
+
+    // Record the PID of the spawned process
+    if (childProcess.pid) {
+        const pidFilePath = path.join(projectRoot, '.sst/sst-mcp.pid');
+        try {
+            fs.writeFileSync(pidFilePath, String(childProcess.pid));
+        } catch (err) {
+            console.error(`Failed to write PID file: ${pidFilePath}`, err);
+        }
+    }
 
     childProcess.stdout?.on('data', (data: Buffer) => {
         const text = data.toString();
@@ -98,6 +120,15 @@ async function startProcess() {
     childProcess.on('exit', (code) => {
         console.log(`Process exited with code: ${code}`);
         logStream.end();
+        // Remove the PID file on exit
+        const pidFilePath = path.join(projectRoot, '.sst/sst-mcp.pid');
+        try {
+            if (fs.existsSync(pidFilePath)) {
+                fs.unlinkSync(pidFilePath);
+            }
+        } catch (err) {
+            console.error(`Failed to remove PID file: ${pidFilePath}`, err);
+        }
         childProcess = null;
     });
 }
@@ -129,6 +160,15 @@ async function handleExit() {
         } catch (e) {
             console.error('Failed to kill process tree:', e);
         }
+    }
+    // Remove the PID file on exit
+    const pidFilePath = path.join(projectRoot, '.sst/sst-mcp.pid');
+    try {
+        if (fs.existsSync(pidFilePath)) {
+            fs.unlinkSync(pidFilePath);
+        }
+    } catch (err) {
+        console.error(`Failed to remove PID file: ${pidFilePath}`, err);
     }
     process.exit();
 }
