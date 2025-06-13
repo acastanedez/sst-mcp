@@ -1,0 +1,17 @@
+{
+  "actions": {
+    "start": {
+      "type": "http",
+      "method": "POST",
+      "url": "http://localhost:55741/actions/start",
+      "params": {
+        "projectRoot": {
+          "type": "string",
+          "description": "Path to the project root (optional)",
+          "required": false
+        }
+      },
+      "description": "Start the SST process by running 'sst dev' via start.ts. All logs from the SST process will be written to .sst/sst-mcp.log in the project root. This means the agent can access all SST logs by reading that file, enabling monitoring and analysis of the SST server's output."
+    }
+  }
+} 
