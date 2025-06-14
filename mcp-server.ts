@@ -7,7 +7,7 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { spawn, ChildProcess } from 'child_process';
-import { createWriteStream, existsSync, mkdirSync, unlinkSync, WriteStream } from 'fs';
+import { createWriteStream, existsSync, mkdirSync, readFileSync, unlinkSync, WriteStream } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -38,7 +38,7 @@ class MCPSSTServer {
         tools: [
           {
             name: 'start-sst-dev',
-            description: 'Start the SST process by running \'sst dev\'. The workspaceRoot parameter is REQUIRED and should be the absolute path to the user\'s workspace/project directory. All logs from the SST process will be written to .sst/sst-mcp.log in the workspace root. This means the agent can access all SST logs by reading that file, enabling monitoring and analysis of the SST server\'s output.',
+            description: 'Start the SST process by running \'sst dev\'. The workspaceRoot parameter is REQUIRED and should be the absolute path to the user\'s workspace/project directory. All logs from the SST process will be written to .sst/sst-mcp.log in the workspace root. This means the agent can access all SST logs by reading that file, enabling monitoring and analysis of the SST server\'s output. NEVER try to start sst dev yourself unless explicitly instructed - always use this tool.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -66,10 +66,16 @@ class MCPSSTServer {
           },
           {
             name: 'get-sst-status',
-            description: 'Check if the SST development process is currently running',
+            description: 'Check if the SST development process is currently running by reading the PID file and verifying the process exists',
             inputSchema: {
               type: 'object',
-              properties: {},
+              properties: {
+                workspaceRoot: {
+                  type: 'string',
+                  description: 'REQUIRED: Absolute path to the workspace/project root directory where SST is running',
+                },
+              },
+              required: ['workspaceRoot'],
             },
           },
           {
@@ -102,7 +108,7 @@ class MCPSSTServer {
             return await this.stopSSTDev(args as { workspaceRoot: string });
           
           case 'get-sst-status':
-            return await this.getSSTStatus();
+            return await this.getSSTStatus(args as { workspaceRoot: string });
           
           case 'sst-debug':
             return await this.getSSTDebugInfo(args as { workspaceRoot: string });
@@ -277,18 +283,81 @@ class MCPSSTServer {
     }
   }
 
-  private async getSSTStatus() {
-    const isRunning = this.sstProcess !== null && !this.sstProcess.killed;
-    const pid = this.sstProcess?.pid;
+  private async getSSTStatus({ workspaceRoot }: { workspaceRoot: string }) {
+    const pidFilePath = join(workspaceRoot, '.sst', 'sst-dev.pid');
     
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `SST development process status: ${isRunning ? `Running (PID: ${pid})` : 'Not running'}`,
-        },
-      ],
-    };
+    // Check if PID file exists
+    if (!existsSync(pidFilePath)) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: 'no',
+          },
+        ],
+      };
+    }
+
+    try {
+      // Read PID from file
+      const pidString = readFileSync(pidFilePath, 'utf8').trim();
+      const pid = parseInt(pidString, 10);
+
+      if (isNaN(pid)) {
+        // Invalid PID, delete the file
+        unlinkSync(pidFilePath);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'no',
+            },
+          ],
+        };
+      }
+
+      // Check if process exists
+      try {
+        process.kill(pid, 0); // Signal 0 checks if process exists without killing it
+        // Process exists
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'yes',
+            },
+          ],
+        };
+      } catch (error) {
+        // Process doesn't exist, delete the PID file
+        if ((error as NodeJS.ErrnoException).code === 'ESRCH') {
+          unlinkSync(pidFilePath);
+        }
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'no',
+            },
+          ],
+        };
+      }
+    } catch (error) {
+      // Error reading PID file, try to delete it
+      try {
+        unlinkSync(pidFilePath);
+      } catch {
+        // Ignore errors when trying to delete
+      }
+      return {
+        content: [
+          {
+            type: 'text',
+            text: 'no',
+          },
+        ],
+      };
+    }
   }
 
   private async getSSTDebugInfo({ workspaceRoot }: { workspaceRoot: string }) {

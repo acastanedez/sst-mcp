@@ -95,7 +95,7 @@ async function startProcess() {
 
     // Record the PID of the spawned process
     if (childProcess.pid) {
-        const pidFilePath = path.join(projectRoot, '.sst/sst-mcp.pid');
+        const pidFilePath = path.join(projectRoot, '.sst', 'sst-dev.pid');
         try {
             fs.writeFileSync(pidFilePath, String(childProcess.pid));
         } catch (err) {
@@ -121,7 +121,7 @@ async function startProcess() {
         console.log(`Process exited with code: ${code}`);
         logStream.end();
         // Remove the PID file on exit
-        const pidFilePath = path.join(projectRoot, '.sst/sst-mcp.pid');
+        const pidFilePath = path.join(projectRoot, '.sst', 'sst-dev.pid');
         try {
             if (fs.existsSync(pidFilePath)) {
                 fs.unlinkSync(pidFilePath);
@@ -162,7 +162,7 @@ async function handleExit() {
         }
     }
     // Remove the PID file on exit
-    const pidFilePath = path.join(projectRoot, '.sst/sst-mcp.pid');
+    const pidFilePath = path.join(projectRoot, '.sst', 'sst-dev.pid');
     try {
         if (fs.existsSync(pidFilePath)) {
             fs.unlinkSync(pidFilePath);

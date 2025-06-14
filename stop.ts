@@ -58,11 +58,13 @@ async function stopSST(projectRoot: string): Promise<void> {
         process.kill(pid, 0);
         console.log('Process did not terminate gracefully, forcing kill...');
         process.kill(pid, 'SIGKILL');
+        
+        // Give it another moment after force kill
+        await new Promise(resolve => setTimeout(resolve, 1000));
       } catch (error) {
         // Process is already dead, which is what we want
       }
       
-      console.log('SST development process stopped successfully');
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ESRCH') {
         console.log('SST process was already stopped (process not found)');
@@ -72,12 +74,26 @@ async function stopSST(projectRoot: string): Promise<void> {
       }
     }
 
-    // Clean up PID file
+    // Verify the process is actually stopped before cleaning up PID file
     try {
-      unlinkSync(pidFilePath);
-      console.log('PID file cleaned up');
+      process.kill(pid, 0);
+      console.error('Process is still running after kill attempts');
+      process.exit(1);
     } catch (error) {
-      console.warn('Failed to remove PID file:', error);
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') {
+        // Process is confirmed dead, safe to clean up PID file
+        console.log('SST development process stopped successfully');
+        
+        try {
+          unlinkSync(pidFilePath);
+          console.log('PID file cleaned up');
+        } catch (error) {
+          console.warn('Failed to remove PID file:', error);
+        }
+      } else {
+        console.error('Error checking process status:', error);
+        process.exit(1);
+      }
     }
 
   } catch (error) {
