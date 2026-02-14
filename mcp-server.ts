@@ -11,13 +11,38 @@ import { createWriteStream, existsSync, mkdirSync, readFileSync, unlinkSync, Wri
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { SSTConfig } from './config.js';
+import { RateLimiter } from 'limiter';
+import winston from 'winston';
+import path from 'path';
 
 class MCPSSTServer {
   private server: Server;
   private sstProcess: ChildProcess | null = null;
   private logStream: WriteStream | null = null;
+  private rateLimiter: RateLimiter;
+  private logger: winston.Logger;
+  private operationTimeouts = new Map<string, NodeJS.Timeout>();
+  private cancelHandlers = new Map<string, () => void>();
 
   constructor() {
+    // Rate limiter: 30 requests per minute
+    this.rateLimiter = new RateLimiter({ tokensPerInterval: 30, interval: 'minute' });
+    
+    // Structured logger
+    this.logger = winston.createLogger({
+      level: process.env.MCP_LOG_LEVEL || 'info',
+      format: winston.format.combine(
+        winston.format.timestamp(),
+        winston.format.errors({ stack: true }),
+        winston.format.json()
+      ),
+      transports: [
+        new winston.transports.File({ filename: 'mcp-server-error.log', level: 'error' }),
+        new winston.transports.File({ filename: 'mcp-server.log' }),
+        new winston.transports.Console({ format: winston.format.simple(), level: 'error' })
+      ]
+    });
+
     this.server = new Server(
       {
         name: 'mcp-sst',
@@ -25,12 +50,73 @@ class MCPSSTServer {
       },
       {
         capabilities: {
-          tools: {},
+          tools: {
+            listChanged: false
+          },
         },
       }
     );
 
     this.setupToolHandlers();
+    this.logger.info('MCP SST Server initialized');
+  }
+
+  private async checkRateLimit(): Promise<void> {
+    const allowed = await this.rateLimiter.removeTokens(1);
+    if (!allowed) {
+      throw new Error('Rate limit exceeded. Please try again later.');
+    }
+  }
+
+  private validateWorkspaceRoot(workspaceRoot: string): void {
+    if (!workspaceRoot || typeof workspaceRoot !== 'string') {
+      throw new Error('workspaceRoot is required and must be a string');
+    }
+    
+    if (!path.isAbsolute(workspaceRoot)) {
+      throw new Error('workspaceRoot must be an absolute path');
+    }
+    
+    if (!existsSync(workspaceRoot)) {
+      throw new Error(`workspaceRoot does not exist: ${workspaceRoot}`);
+    }
+    
+    const resolved = path.resolve(workspaceRoot);
+    if (resolved !== workspaceRoot) {
+      throw new Error('workspaceRoot contains invalid path components');
+    }
+  }
+
+  private async withTimeout<T>(
+    promise: Promise<T>,
+    timeoutMs: number,
+    operation: string,
+    onCancel?: () => void
+  ): Promise<T> {
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      const timeout = setTimeout(() => {
+        if (onCancel) onCancel();
+        reject(new Error(`${operation} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      this.operationTimeouts.set(operation, timeout);
+    });
+    
+    try {
+      const result = await Promise.race([promise, timeoutPromise]);
+      const timeout = this.operationTimeouts.get(operation);
+      if (timeout) {
+        clearTimeout(timeout);
+        this.operationTimeouts.delete(operation);
+      }
+      return result;
+    } catch (error) {
+      const timeout = this.operationTimeouts.get(operation);
+      if (timeout) {
+        clearTimeout(timeout);
+        this.operationTimeouts.delete(operation);
+      }
+      throw error;
+    }
   }
 
   private setupToolHandlers() {
@@ -39,13 +125,13 @@ class MCPSSTServer {
         tools: [
           {
             name: 'start-sst-dev',
-            description: 'Start SST in LIVE MODE by running "npx sst dev". This starts the local development server with hot-reloading for Lambda functions and frontend code. When the user says "start live mode" or "start sst dev", use this tool. All logs are written to .sst/sst-mcp.log for monitoring. NEVER run sst dev manually - always use this tool.',
+            description: 'Start SST in LIVE MODE (local development with hot-reloading). When user says "start live mode" or "start sst dev", use this tool. Runs "npx sst dev".',
             inputSchema: {
               type: 'object',
               properties: {
                 workspaceRoot: {
                   type: 'string',
-                  description: 'REQUIRED: Absolute path to the workspace/project root directory where SST should run',
+                  description: 'Absolute path to the workspace/project root directory',
                 },
               },
               required: ['workspaceRoot'],
@@ -53,13 +139,13 @@ class MCPSSTServer {
           },
           {
             name: 'stop-sst-dev',
-            description: 'Stop the currently running SST live mode process (sst dev). When the user says "stop live mode" or "stop sst dev", use this tool.',
+            description: 'Stop the running SST live mode server.',
             inputSchema: {
               type: 'object',
               properties: {
                 workspaceRoot: {
                   type: 'string',
-                  description: 'REQUIRED: Absolute path to the workspace/project root directory where SST is running',
+                  description: 'Absolute path to the workspace/project root directory',
                 },
               },
               required: ['workspaceRoot'],
@@ -67,17 +153,17 @@ class MCPSSTServer {
           },
           {
             name: 'sst-deploy',
-            description: 'Deploy to a specific stage using "npx sst deploy --stage <stage>". When the user says "deploy to dev mode" or "deploy to dev stage", use this with stage="dev". When they say "deploy to production" or "deploy to prod stage", use stage="production". This is for deploying infrastructure and code changes to AWS, NOT for local development (use start-sst-dev for that).',
+            description: 'Deploy to AWS stage (NOT live mode). When user says "deploy to dev" or "deploy to dev stage/mode", use this with stage="dev". When they say "deploy to production", use stage="production". Runs "npx sst deploy --stage <stage>".',
             inputSchema: {
               type: 'object',
               properties: {
                 workspaceRoot: {
                   type: 'string',
-                  description: 'REQUIRED: Absolute path to the workspace/project root directory',
+                  description: 'Absolute path to the workspace/project root directory',
                 },
                 stage: {
                   type: 'string',
-                  description: 'Deployment stage: "dev" for development, "production" for production, or any custom stage name',
+                  description: 'Deployment stage (default: "dev")',
                   default: 'dev',
                 },
               },
@@ -86,17 +172,17 @@ class MCPSSTServer {
           },
           {
             name: 'sst-restart-for-infra',
-            description: 'Full infrastructure change workflow: 1) Stop sst dev, 2) Run sst deploy, 3) Restart sst dev. Use this when infrastructure files (infra/*.ts) have been modified and need to be applied while in live mode. Lambda and frontend changes do NOT need this - sst dev handles those automatically.',
+            description: 'Stop dev server, deploy infrastructure changes, then restart dev server.',
             inputSchema: {
               type: 'object',
               properties: {
                 workspaceRoot: {
                   type: 'string',
-                  description: 'REQUIRED: Absolute path to the workspace/project root directory',
+                  description: 'Absolute path to the workspace/project root directory',
                 },
                 stage: {
                   type: 'string',
-                  description: 'Deployment stage (defaults to "dev")',
+                  description: 'Deployment stage (default: "dev")',
                   default: 'dev',
                 },
               },
@@ -105,13 +191,13 @@ class MCPSSTServer {
           },
           {
             name: 'get-sst-status',
-            description: 'Check if SST live mode (sst dev) is currently running by reading the PID file and verifying the process exists',
+            description: 'Get detailed status of the SST development server (PID, uptime, last log entry).',
             inputSchema: {
               type: 'object',
               properties: {
                 workspaceRoot: {
                   type: 'string',
-                  description: 'REQUIRED: Absolute path to the workspace/project root directory where SST is running',
+                  description: 'Absolute path to the workspace/project root directory',
                 },
               },
               required: ['workspaceRoot'],
@@ -119,13 +205,13 @@ class MCPSSTServer {
           },
           {
             name: 'sst-debug',
-            description: 'Get debug information about MCP server paths and environment for troubleshooting',
+            description: 'Get debug information about MCP server paths and environment.',
             inputSchema: {
               type: 'object',
               properties: {
                 workspaceRoot: {
                   type: 'string',
-                  description: 'REQUIRED: Absolute path to the workspace/project root directory',
+                  description: 'Absolute path to the workspace/project root directory',
                 },
               },
               required: ['workspaceRoot'],
@@ -133,17 +219,17 @@ class MCPSSTServer {
           },
           {
             name: 'get-sst-logs',
-            description: 'Get the last N lines from the SST log file (.sst/sst-mcp.log). Useful for quick status checks without reading the entire log.',
+            description: 'Get the last N lines from the SST log file.',
             inputSchema: {
               type: 'object',
               properties: {
                 workspaceRoot: {
                   type: 'string',
-                  description: 'REQUIRED: Absolute path to the workspace/project root directory',
+                  description: 'Absolute path to the workspace/project root directory',
                 },
                 lines: {
                   type: 'number',
-                  description: 'Number of lines to return from the end of the log (default: 50)',
+                  description: 'Number of lines to return (default: 50)',
                   default: 50,
                 },
               },
@@ -152,13 +238,13 @@ class MCPSSTServer {
           },
           {
             name: 'get-sst-errors',
-            description: 'Extract and return only error messages from the SST logs. Parses for common error patterns like build failures, deployment errors, and exceptions.',
+            description: 'Extract only error messages from SST logs.',
             inputSchema: {
               type: 'object',
               properties: {
                 workspaceRoot: {
                   type: 'string',
-                  description: 'REQUIRED: Absolute path to the workspace/project root directory',
+                  description: 'Absolute path to the workspace/project root directory',
                 },
               },
               required: ['workspaceRoot'],
@@ -166,13 +252,13 @@ class MCPSSTServer {
           },
           {
             name: 'list-sst-resources',
-            description: 'List all deployed SST resources (APIs, functions, buckets, etc.) for a given stage by parsing SST metadata.',
+            description: 'List all deployed SST resources (APIs, functions, buckets) for a stage.',
             inputSchema: {
               type: 'object',
               properties: {
                 workspaceRoot: {
                   type: 'string',
-                  description: 'REQUIRED: Absolute path to the workspace/project root directory',
+                  description: 'Absolute path to the workspace/project root directory',
                 },
                 stage: {
                   type: 'string',
@@ -185,13 +271,13 @@ class MCPSSTServer {
           },
           {
             name: 'list-sst-stages',
-            description: 'List all deployed SST stages in the workspace.',
+            description: 'List all deployed SST stages.',
             inputSchema: {
               type: 'object',
               properties: {
                 workspaceRoot: {
                   type: 'string',
-                  description: 'REQUIRED: Absolute path to the workspace/project root directory',
+                  description: 'Absolute path to the workspace/project root directory',
                 },
               },
               required: ['workspaceRoot'],
@@ -199,17 +285,17 @@ class MCPSSTServer {
           },
           {
             name: 'remove-sst-stage',
-            description: 'Remove a deployed SST stage by running "sst remove --stage <stage>".',
+            description: 'Remove a deployed SST stage.',
             inputSchema: {
               type: 'object',
               properties: {
                 workspaceRoot: {
                   type: 'string',
-                  description: 'REQUIRED: Absolute path to the workspace/project root directory',
+                  description: 'Absolute path to the workspace/project root directory',
                 },
                 stage: {
                   type: 'string',
-                  description: 'REQUIRED: Stage name to remove',
+                  description: 'Stage name to remove',
                 },
               },
               required: ['workspaceRoot', 'stage'],
@@ -217,13 +303,13 @@ class MCPSSTServer {
           },
           {
             name: 'get-sst-env',
-            description: 'Read the current environment variables from env.sh file.',
+            description: 'Read environment variables from env.sh file.',
             inputSchema: {
               type: 'object',
               properties: {
                 workspaceRoot: {
                   type: 'string',
-                  description: 'REQUIRED: Absolute path to the workspace/project root directory',
+                  description: 'Absolute path to the workspace/project root directory',
                 },
               },
               required: ['workspaceRoot'],
@@ -231,17 +317,17 @@ class MCPSSTServer {
           },
           {
             name: 'set-sst-env',
-            description: 'Set or update environment variables in the env.sh file. This will trigger an automatic restart of sst dev if it is running.',
+            description: 'Update environment variables in env.sh (triggers auto-restart if dev is running).',
             inputSchema: {
               type: 'object',
               properties: {
                 workspaceRoot: {
                   type: 'string',
-                  description: 'REQUIRED: Absolute path to the workspace/project root directory',
+                  description: 'Absolute path to the workspace/project root directory',
                 },
                 variables: {
                   type: 'object',
-                  description: 'REQUIRED: Key-value pairs of environment variables to set',
+                  description: 'Key-value pairs of environment variables',
                 },
               },
               required: ['workspaceRoot', 'variables'],
@@ -249,26 +335,26 @@ class MCPSSTServer {
           },
           {
             name: 'invoke-sst-function',
-            description: 'Invoke a Lambda function directly for testing using "sst shell" or AWS SDK.',
+            description: 'Invoke a Lambda function directly for testing.',
             inputSchema: {
               type: 'object',
               properties: {
                 workspaceRoot: {
                   type: 'string',
-                  description: 'REQUIRED: Absolute path to the workspace/project root directory',
+                  description: 'Absolute path to the workspace/project root directory',
                 },
                 functionName: {
                   type: 'string',
-                  description: 'REQUIRED: Name of the Lambda function to invoke',
+                  description: 'Name of the Lambda function to invoke',
                 },
                 payload: {
                   type: 'string',
-                  description: 'JSON payload to send to the function (default: "{}")',
+                  description: 'JSON payload (default: "{}")',
                   default: '{}',
                 },
                 stage: {
                   type: 'string',
-                  description: 'Stage where the function is deployed (default: "dev")',
+                  description: 'Stage where function is deployed (default: "dev")',
                   default: 'dev',
                 },
               },
@@ -277,13 +363,13 @@ class MCPSSTServer {
           },
           {
             name: 'cleanup-sst',
-            description: 'Clean up SST local files (.sst directory, PID files, logs) for a fresh start. Does NOT remove deployed resources.',
+            description: 'Remove .sst directory and local files for a fresh start (does not remove deployed resources).',
             inputSchema: {
               type: 'object',
               properties: {
                 workspaceRoot: {
                   type: 'string',
-                  description: 'REQUIRED: Absolute path to the workspace/project root directory',
+                  description: 'Absolute path to the workspace/project root directory',
                 },
               },
               required: ['workspaceRoot'],
@@ -291,14 +377,144 @@ class MCPSSTServer {
           },
           {
             name: 'validate-sst-workspace',
-            description: 'Check if the directory is a valid SST project by verifying sst.config.ts exists and other required files.',
+            description: 'Verify directory is a valid SST project.',
             inputSchema: {
               type: 'object',
               properties: {
                 workspaceRoot: {
                   type: 'string',
-                  description: 'REQUIRED: Absolute path to the workspace/project root directory',
+                  description: 'Absolute path to the workspace/project root directory',
                 },
+              },
+              required: ['workspaceRoot'],
+            },
+          },
+          {
+            name: 'health-check',
+            description: 'Check MCP server health status.',
+            inputSchema: {
+              type: 'object',
+              properties: {},
+            },
+          },
+          {
+            name: 'sst-diff',
+            description: 'Preview infrastructure changes before deployment.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                workspaceRoot: { type: 'string', description: 'Absolute path to workspace' },
+                target: { type: 'string', description: 'Specific component to diff' },
+                dev: { type: 'boolean', description: 'Compare to dev version' }
+              },
+              required: ['workspaceRoot'],
+            },
+          },
+          {
+            name: 'sst-refresh',
+            description: 'Sync local state with cloud provider resources.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                workspaceRoot: { type: 'string', description: 'Absolute path to workspace' },
+                target: { type: 'string', description: 'Specific component to refresh' }
+              },
+              required: ['workspaceRoot'],
+            },
+          },
+          {
+            name: 'sst-unlock',
+            description: 'Release deployment lock.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                workspaceRoot: { type: 'string', description: 'Absolute path to workspace' }
+              },
+              required: ['workspaceRoot'],
+            },
+          },
+          {
+            name: 'sst-secret-set',
+            description: 'Set a secret value.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                workspaceRoot: { type: 'string', description: 'Absolute path to workspace' },
+                name: { type: 'string', description: 'Secret name' },
+                value: { type: 'string', description: 'Secret value' },
+                fallback: { type: 'boolean', description: 'Set as fallback value' }
+              },
+              required: ['workspaceRoot', 'name', 'value'],
+            },
+          },
+          {
+            name: 'sst-secret-get',
+            description: 'Get a secret value.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                workspaceRoot: { type: 'string', description: 'Absolute path to workspace' },
+                name: { type: 'string', description: 'Secret name' },
+                fallback: { type: 'boolean', description: 'Get fallback value' }
+              },
+              required: ['workspaceRoot', 'name'],
+            },
+          },
+          {
+            name: 'sst-secret-list',
+            description: 'List all secrets.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                workspaceRoot: { type: 'string', description: 'Absolute path to workspace' },
+                fallback: { type: 'boolean', description: 'List fallback secrets' }
+              },
+              required: ['workspaceRoot'],
+            },
+          },
+          {
+            name: 'sst-secret-remove',
+            description: 'Remove a secret.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                workspaceRoot: { type: 'string', description: 'Absolute path to workspace' },
+                name: { type: 'string', description: 'Secret name' },
+                fallback: { type: 'boolean', description: 'Remove fallback value' }
+              },
+              required: ['workspaceRoot', 'name'],
+            },
+          },
+          {
+            name: 'sst-shell-exec',
+            description: 'Execute command with linked resources in environment.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                workspaceRoot: { type: 'string', description: 'Absolute path to workspace' },
+                command: { type: 'string', description: 'Command to execute' },
+                target: { type: 'string', description: 'Specific component context' }
+              },
+              required: ['workspaceRoot', 'command'],
+            },
+          },
+          {
+            name: 'sst-upgrade',
+            description: 'Upgrade SST CLI to specific version.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                version: { type: 'string', description: 'Version to upgrade to (optional)' }
+              },
+            },
+          },
+          {
+            name: 'sst-version',
+            description: 'Get current SST CLI version.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                workspaceRoot: { type: 'string', description: 'Absolute path to workspace' }
               },
               required: ['workspaceRoot'],
             },
@@ -311,6 +527,9 @@ class MCPSSTServer {
       const { name, arguments: args } = request.params;
 
       try {
+        // Rate limiting
+        await this.checkRateLimit();
+        
         switch (name) {
           case 'start-sst-dev':
             return await this.startSSTDev(args as { workspaceRoot: string });
@@ -344,10 +563,38 @@ class MCPSSTServer {
             return await this.cleanupSST(args as { workspaceRoot: string });
           case 'validate-sst-workspace':
             return await this.validateSSTWorkspace(args as { workspaceRoot: string });
+          case 'health-check':
+            return await this.healthCheck();
+          case 'sst-diff':
+            return await this.sstDiff(args as { workspaceRoot: string; target?: string; dev?: boolean });
+          case 'sst-refresh':
+            return await this.sstRefresh(args as { workspaceRoot: string; target?: string });
+          case 'sst-unlock':
+            return await this.sstUnlock(args as { workspaceRoot: string });
+          case 'sst-secret-set':
+            return await this.sstSecretSet(args as { workspaceRoot: string; name: string; value: string; fallback?: boolean });
+          case 'sst-secret-get':
+            return await this.sstSecretGet(args as { workspaceRoot: string; name: string; fallback?: boolean });
+          case 'sst-secret-list':
+            return await this.sstSecretList(args as { workspaceRoot: string; fallback?: boolean });
+          case 'sst-secret-remove':
+            return await this.sstSecretRemove(args as { workspaceRoot: string; name: string; fallback?: boolean });
+          case 'sst-shell-exec':
+            return await this.sstShellExec(args as { workspaceRoot: string; command: string; target?: string });
+          case 'sst-upgrade':
+            return await this.sstUpgrade(args as { version?: string });
+          case 'sst-version':
+            return await this.sstVersion(args as { workspaceRoot: string });
           default:
             throw new Error(`Unknown tool: ${name}`);
         }
       } catch (error) {
+        this.logger.error('Tool execution error', {
+          tool: name,
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined
+        });
+        
         return {
           content: [
             {
@@ -355,12 +602,16 @@ class MCPSSTServer {
               text: `Error: ${error instanceof Error ? error.message : String(error)}`,
             },
           ],
+          isError: true
         };
       }
     });
   }
 
   private async startSSTDev({ workspaceRoot }: { workspaceRoot: string }) {
+    this.validateWorkspaceRoot(workspaceRoot);
+    this.logger.info('Starting SST dev', { workspaceRoot });
+    
     if (this.sstProcess) {
       return {
         content: [
@@ -447,6 +698,9 @@ class MCPSSTServer {
   }
 
   private async stopSSTDev({ workspaceRoot }: { workspaceRoot: string }) {
+    this.validateWorkspaceRoot(workspaceRoot);
+    this.logger.info('Stopping SST dev', { workspaceRoot });
+    
     try {
       const mcpServerDir = dirname(fileURLToPath(import.meta.url));
       const stopScriptPath = join(mcpServerDir, 'stop.ts');
@@ -509,6 +763,9 @@ class MCPSSTServer {
   }
 
   private async sstDeploy({ workspaceRoot, stage = SSTConfig.DEFAULT_STAGE }: { workspaceRoot: string; stage?: string }) {
+    this.validateWorkspaceRoot(workspaceRoot);
+    this.logger.info('Starting SST deploy', { workspaceRoot, stage });
+    
     const sstDir = SSTConfig.getSSTDir(workspaceRoot);
     if (!existsSync(sstDir)) {
       mkdirSync(sstDir, { recursive: true });
@@ -519,11 +776,18 @@ class MCPSSTServer {
     const timestamp = new Date().toISOString();
     logStream.write(`\n=== SST Deploy (--stage ${stage}) Started at ${timestamp} ===\n`);
 
-    return new Promise<{ content: Array<{ type: string; text: string }> }>((resolve, reject) => {
+    const deployPromise = new Promise<{ content: Array<{ type: string; text: string }> }>((resolve, reject) => {
       const deployProcess = spawn(SSTConfig.NPX_COMMAND, [SSTConfig.SST_COMMAND, ...SSTConfig.SST_DEPLOY_ARGS(stage)], {
         cwd: workspaceRoot,
         stdio: ['inherit', 'pipe', 'pipe'],
         env: process.env,
+      });
+      
+      // Store cancel handler
+      const cancelKey = `deploy-${workspaceRoot}-${stage}`;
+      this.cancelHandlers.set(cancelKey, () => {
+        deployProcess.kill('SIGTERM');
+        this.logger.info('Deploy cancelled', { workspaceRoot, stage });
       });
 
       let output = '';
@@ -548,11 +812,15 @@ class MCPSSTServer {
       }
 
       deployProcess.on('close', (code) => {
+        const cancelKey = `deploy-${workspaceRoot}-${stage}`;
+        this.cancelHandlers.delete(cancelKey);
+        
         const endTimestamp = new Date().toISOString();
         logStream.write(`\n=== SST Deploy Ended at ${endTimestamp} with code ${code} ===\n`);
         logStream.end();
 
         if (code === 0) {
+          this.logger.info('Deploy completed successfully', { workspaceRoot, stage });
           resolve({
             content: [
               {
@@ -562,18 +830,37 @@ class MCPSSTServer {
             ],
           });
         } else {
+          this.logger.error('Deploy failed', { workspaceRoot, stage, code, errorOutput });
           reject(new Error(`SST deploy failed with code ${code}:\n${errorOutput}\n${output}`));
         }
       });
 
       deployProcess.on('error', (error) => {
+        const cancelKey = `deploy-${workspaceRoot}-${stage}`;
+        this.cancelHandlers.delete(cancelKey);
         logStream.end();
+        this.logger.error('Deploy process error', { workspaceRoot, stage, error: error.message });
         reject(new Error(`Failed to run sst deploy: ${error.message}`));
       });
     });
+    
+    // Wrap with timeout (5 minutes for deploy)
+    const cancelKey = `deploy-${workspaceRoot}-${stage}`;
+    return await this.withTimeout(
+      deployPromise,
+      300000,
+      'SST deployment',
+      () => {
+        const handler = this.cancelHandlers.get(cancelKey);
+        if (handler) handler();
+      }
+    );
   }
 
   private async sstRestartForInfra({ workspaceRoot, stage = SSTConfig.DEFAULT_STAGE }: { workspaceRoot: string; stage?: string }) {
+    this.validateWorkspaceRoot(workspaceRoot);
+    this.logger.info('Starting infra restart workflow', { workspaceRoot, stage });
+    
     const sstDir = SSTConfig.getSSTDir(workspaceRoot);
     if (!existsSync(sstDir)) {
       mkdirSync(sstDir, { recursive: true });
@@ -1038,12 +1325,194 @@ class MCPSSTServer {
     return { content: [{ type: 'text', text: results.join('\n') }] };
   }
 
+  private async sstDiff({ workspaceRoot, target, dev }: { workspaceRoot: string; target?: string; dev?: boolean }) {
+    this.validateWorkspaceRoot(workspaceRoot);
+    this.logger.info('Running SST diff', { workspaceRoot, target, dev });
+
+    const args = ['diff'];
+    if (target) args.push('--target', target);
+    if (dev) args.push('--dev');
+
+    return await this.runSSTCommand(workspaceRoot, args, 'diff');
+  }
+
+  private async sstRefresh({ workspaceRoot, target }: { workspaceRoot: string; target?: string }) {
+    this.validateWorkspaceRoot(workspaceRoot);
+    this.logger.info('Running SST refresh', { workspaceRoot, target });
+
+    const args = ['refresh'];
+    if (target) args.push('--target', target);
+
+    return await this.runSSTCommand(workspaceRoot, args, 'refresh');
+  }
+
+  private async sstUnlock({ workspaceRoot }: { workspaceRoot: string }) {
+    this.validateWorkspaceRoot(workspaceRoot);
+    this.logger.info('Unlocking SST', { workspaceRoot });
+
+    return await this.runSSTCommand(workspaceRoot, ['unlock'], 'unlock');
+  }
+
+  private async sstSecretSet({ workspaceRoot, name, value, fallback }: { workspaceRoot: string; name: string; value: string; fallback?: boolean }) {
+    this.validateWorkspaceRoot(workspaceRoot);
+    this.logger.info('Setting SST secret', { workspaceRoot, name, fallback });
+
+    const args = ['secret', 'set', name, value];
+    if (fallback) args.push('--fallback');
+
+    return await this.runSSTCommand(workspaceRoot, args, 'secret set');
+  }
+
+  private async sstSecretGet({ workspaceRoot, name, fallback }: { workspaceRoot: string; name: string; fallback?: boolean }) {
+    this.validateWorkspaceRoot(workspaceRoot);
+    this.logger.info('Getting SST secret', { workspaceRoot, name, fallback });
+
+    const args = ['secret', 'list'];
+    if (fallback) args.push('--fallback');
+
+    return await this.runSSTCommand(workspaceRoot, args, 'secret get');
+  }
+
+  private async sstSecretList({ workspaceRoot, fallback }: { workspaceRoot: string; fallback?: boolean }) {
+    this.validateWorkspaceRoot(workspaceRoot);
+    this.logger.info('Listing SST secrets', { workspaceRoot, fallback });
+
+    const args = ['secret', 'list'];
+    if (fallback) args.push('--fallback');
+
+    return await this.runSSTCommand(workspaceRoot, args, 'secret list');
+  }
+
+  private async sstSecretRemove({ workspaceRoot, name, fallback }: { workspaceRoot: string; name: string; fallback?: boolean }) {
+    this.validateWorkspaceRoot(workspaceRoot);
+    this.logger.info('Removing SST secret', { workspaceRoot, name, fallback });
+
+    const args = ['secret', 'remove', name];
+    if (fallback) args.push('--fallback');
+
+    return await this.runSSTCommand(workspaceRoot, args, 'secret remove');
+  }
+
+  private async sstShellExec({ workspaceRoot, command, target }: { workspaceRoot: string; command: string; target?: string }) {
+    this.validateWorkspaceRoot(workspaceRoot);
+    this.logger.info('Executing shell command', { workspaceRoot, command, target });
+
+    const args = ['shell'];
+    if (target) args.push('--target', target);
+    args.push('--', ...command.split(' '));
+
+    return await this.runSSTCommand(workspaceRoot, args, 'shell exec', 60000);
+  }
+
+  private async sstUpgrade({ version }: { version?: string }) {
+    this.logger.info('Upgrading SST', { version });
+
+    const args = ['upgrade'];
+    if (version) args.push(version);
+
+    return await this.runSSTCommand(process.cwd(), args, 'upgrade');
+  }
+
+  private async sstVersion({ workspaceRoot }: { workspaceRoot: string }) {
+    this.validateWorkspaceRoot(workspaceRoot);
+
+    return await this.runSSTCommand(workspaceRoot, ['version'], 'version');
+  }
+
+  private async runSSTCommand(
+    workspaceRoot: string,
+    args: string[],
+    operation: string,
+    timeoutMs: number = 120000
+  ): Promise<{ content: Array<{ type: string; text: string }> }> {
+    const commandPromise = new Promise<{ content: Array<{ type: string; text: string }> }>((resolve, reject) => {
+      const proc = spawn(SSTConfig.NPX_COMMAND, [SSTConfig.SST_COMMAND, ...args], {
+        cwd: workspaceRoot,
+        stdio: ['inherit', 'pipe', 'pipe'],
+        env: process.env,
+      });
+
+      const cancelKey = `${operation}-${Date.now()}`;
+      this.cancelHandlers.set(cancelKey, () => {
+        proc.kill('SIGTERM');
+        this.logger.info(`${operation} cancelled`);
+      });
+
+      let output = '';
+      let errorOutput = '';
+
+      if (proc.stdout) {
+        proc.stdout.on('data', (data) => {
+          output += data.toString();
+        });
+      }
+
+      if (proc.stderr) {
+        proc.stderr.on('data', (data) => {
+          errorOutput += data.toString();
+        });
+      }
+
+      proc.on('close', (code) => {
+        this.cancelHandlers.delete(cancelKey);
+
+        if (code === 0) {
+          this.logger.info(`${operation} completed`, { code });
+          resolve({
+            content: [{ type: 'text', text: output || `${operation} completed successfully` }]
+          });
+        } else {
+          this.logger.error(`${operation} failed`, { code, errorOutput });
+          reject(new Error(`${operation} failed with code ${code}:\n${errorOutput}\n${output}`));
+        }
+      });
+
+      proc.on('error', (error) => {
+        this.cancelHandlers.delete(cancelKey);
+        this.logger.error(`${operation} process error`, { error: error.message });
+        reject(new Error(`Failed to run ${operation}: ${error.message}`));
+      });
+    });
+
+    return await this.withTimeout(
+      commandPromise,
+      timeoutMs,
+      operation,
+      () => {
+        const handler = this.cancelHandlers.get(`${operation}-${Date.now()}`);
+        if (handler) handler();
+      }
+    );
+  }
+
+  private async healthCheck(): Promise<{ content: Array<{ type: string; text: string }> }> {
+    const health = {
+      status: 'healthy',
+      uptime: process.uptime(),
+      memory: process.memoryUsage(),
+      timestamp: new Date().toISOString(),
+      activeOperations: this.operationTimeouts.size,
+      sstProcessRunning: this.sstProcess !== null,
+      version: '2.0.0'
+    };
+    
+    this.logger.info('Health check performed', health);
+    
+    return {
+      content: [{ type: 'text', text: JSON.stringify(health, null, 2) }]
+    };
+  }
+
   async run() {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
+    this.logger.info('MCP SST Server running on stdio');
     console.error('MCP SST Server running on stdio');
   }
 }
 
 const server = new MCPSSTServer();
-server.run().catch(console.error);
+server.run().catch((error) => {
+  console.error('Fatal error:', error);
+  process.exit(1);
+});

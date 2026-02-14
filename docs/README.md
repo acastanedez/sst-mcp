@@ -1,25 +1,39 @@
 # SST MCP Server Documentation
 
-## Overview
-Documentation for the SST MCP Server - a Model Context Protocol server that wraps the SST development experience for AI agents.
+Complete documentation for the SST MCP Server - a production-ready Model Context Protocol server that provides AI agents with full control over SST development workflows.
 
-## Documentation Structure
+## Quick Start
 
-### Technical Documentation
-- [Hardcoded Paths Removal](./technical/hardcoded-paths-removal.md) - Implementation details of the centralized configuration system
+1. **Installation**: `npm install`
+2. **Configuration**: Add to your MCP client config (Cursor, Kiro CLI, etc.)
+3. **Usage**: AI agents can now manage your SST projects
 
-### Development Summaries
-- [Improvements Summary](./summaries/improvements.md) - Summary of new tools and enhancements added to the MCP server
+## Documentation
 
-## Quick Links
+### 📚 Guides
+- [Getting Started](./guides/getting-started.md) - Installation and setup
+- [Tool Usage Guide](./guides/tool-usage.md) - How to use each tool effectively
 
-- [Main README](../README.md) - Project overview and quick start guide
-- [SST Documentation](https://sst.dev) - Official SST framework documentation
-- [MCP Specification](https://modelcontextprotocol.io) - Model Context Protocol specification
+### 📖 Reference
+- [Tool Reference](./reference/tool-reference.md) - Complete tool catalog with parameters
+- [Configuration Reference](./reference/configuration.md) - Environment variables and settings
 
-## Getting Help
+### 🔧 Technical
+- [Architecture](./technical/architecture.md) - System design and implementation
+- [MCP Compliance](./technical/mcp-compliance.md) - Standards and best practices followed
 
-For issues or questions:
-1. Check the main README for common setup and usage patterns
-2. Review the technical documentation for implementation details
-3. Consult the development summaries for context on recent changes
+## Features
+
+**28 Tools** organized in 6 categories:
+- Development Lifecycle (4 tools)
+- Deployment & Infrastructure (7 tools)
+- Observability (3 tools)
+- Secret Management (4 tools)
+- Environment Management (3 tools)
+- Utilities (7 tools)
+
+## Support
+
+- [GitHub Issues](https://github.com/sst/sst/issues)
+- [SST Discord](https://sst.dev/discord)
+- [MCP Specification](https://modelcontextprotocol.io)

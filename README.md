@@ -1,8 +1,10 @@
 # SST MCP Server
 
+> **Based on**: [martinpllu/sst-mcp](https://github.com/martinpllu/sst-mcp) - Extended with 28 tools, MCP best practices, and production features.
+
 > **Important ⚠️**: This MCP server **starts and manages the `sst dev` process for you**. Do **not** run `sst dev` manually while the server is in control, otherwise logs will be split between terminals and agents will lose visibility. Capturing the full stdout/stderr stream directly from the spawn process is required to make all build, Vite and Lambda logs available to the agent (see [discussion](https://github.com/sst/sst/issues/5885)).
 
-A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that wraps the [SST](https://sst.dev) development experience. It exposes MCP tools that let AI agents start, stop, and inspect an `sst dev` process in a user workspace while capturing logs for analysis.
+A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that wraps the [SST](https://sst.dev) development experience. It exposes MCP tools that let AI agents manage SST projects, from development to deployment.
 
 ## Features
 
@@ -14,19 +16,37 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that wr
 
 ### Deployment & Infrastructure
 - **sst-deploy** – Deploy infrastructure and code to AWS (`sst deploy --stage <stage>`)
+- **sst-diff** – Preview infrastructure changes before deployment
+- **sst-refresh** – Sync local state with cloud provider resources
 - **sst-restart-for-infra** – Full workflow: stop dev → deploy → restart dev
 - **list-sst-stages** – Show all deployed stages in the workspace
 - **remove-sst-stage** – Remove a deployed stage (`sst remove --stage <stage>`)
+- **sst-unlock** – Release stuck deployment locks
 
 ### Observability
 - **get-sst-logs** – Get last N lines from log file (default: 50)
 - **get-sst-errors** – Extract only error messages from logs
 - **list-sst-resources** – List all deployed resources (APIs, functions, buckets)
 
+### Secret Management
+- **sst-secret-set** – Set secret values (supports fallback)
+- **sst-secret-get** – Get secret values
+- **sst-secret-list** – List all secrets
+- **sst-secret-remove** – Remove secrets
+
 ### Environment Management
 - **get-sst-env** – Read current environment variables from `env.sh`
 - **set-sst-env** – Update environment variables (triggers auto-restart if dev is running)
+- **sst-shell-exec** – Execute commands with linked resources in environment
 - Automatic restart when `env.sh` changes
+
+### Utilities
+- **sst-version** – Get current SST CLI version
+- **sst-upgrade** – Upgrade SST CLI to specific version
+- **invoke-sst-function** – Test Lambda functions directly using `sst shell`
+- **validate-sst-workspace** – Check if directory is a valid SST project
+- **cleanup-sst** – Remove `.sst` directory, PID files, and logs for fresh start
+- **health-check** – Check MCP server health status
 
 ### Testing & Maintenance
 - **invoke-sst-function** – Test Lambda functions directly using `sst shell`
@@ -121,8 +141,22 @@ pnpm dev          # Start the TypeScript entrypoint (start.ts)
 ## Documentation
 
 - [Documentation Index](./docs/README.md) - Full documentation overview
-- [Technical Documentation](./docs/technical/) - Implementation details
-- [Development Summaries](./docs/summaries/) - Change summaries and improvements
+- [Getting Started Guide](./docs/guides/getting-started.md) - Installation and setup
+- [Tool Reference](./docs/reference/tool-reference.md) - Complete tool catalog
+- [Architecture](./docs/technical/architecture.md) - System design
+
+## Credits
+
+This project is based on [martinpllu/sst-mcp](https://github.com/martinpllu/sst-mcp) by Martin Plu.
+
+**Enhancements in this version**:
+- Expanded from 6 to 28 tools
+- Added MCP best practices compliance (rate limiting, timeouts, structured logging)
+- Implemented secret management tools
+- Added state management (diff, refresh, unlock)
+- Centralized configuration system
+- Comprehensive documentation
+- Production-ready features
 
 ## Contributing
 
@@ -130,4 +164,4 @@ Pull requests welcome! Please include tests where relevant.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) - See LICENSE file for full text including original author credits.
