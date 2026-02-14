@@ -55,30 +55,33 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that wr
 
 ## Installation
 
+### For npx Users (Recommended)
+
+No installation needed! Just configure your MCP client to use `npx`:
+
 ```bash
-pnpm install   # or npm install / yarn install
+# The MCP client will automatically run:
+npx -y tsx /absolute/path/to/sst-mcp/mcp-server.ts
+```
+
+### For Local Development
+
+```bash
+npm install   # or pnpm install / yarn install
 ```
 
 ## Usage
 
-### Standalone Mode
+### With Kiro CLI
 
-Run the MCP server directly:
-
-```bash
-pnpm tsx mcp-server.ts
-```
-
-### With Cursor
-
-Add to your `.cursor/config.json` or `cursor.json`:
+Add to `~/.kiro/mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "sst-mcp": {
       "command": "npx",
-      "args": ["tsx", "/absolute/path/to/sst-mcp/mcp-server.ts"]
+      "args": ["-y", "tsx", "/absolute/path/to/sst-mcp/mcp-server.ts"]
     }
   }
 }
@@ -86,16 +89,46 @@ Add to your `.cursor/config.json` or `cursor.json`:
 
 Replace `/absolute/path/to/sst-mcp/mcp-server.ts` with the actual path on your machine.
 
-### With Kiro CLI
+### With Kiro IDE
 
-Add to your Kiro CLI MCP configuration:
+Add to your Kiro IDE MCP settings:
 
 ```json
 {
   "mcpServers": {
     "sst-mcp": {
       "command": "npx",
-      "args": ["tsx", "/absolute/path/to/sst-mcp/mcp-server.ts"]
+      "args": ["-y", "tsx", "/absolute/path/to/sst-mcp/mcp-server.ts"]
+    }
+  }
+}
+```
+
+### With Cursor
+
+Add to `.cursor/config.json`:
+
+```json
+{
+  "mcpServers": {
+    "sst-mcp": {
+      "command": "npx",
+      "args": ["-y", "tsx", "/absolute/path/to/sst-mcp/mcp-server.ts"]
+    }
+  }
+}
+```
+
+### With Claude Desktop
+
+Add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "sst-mcp": {
+      "command": "npx",
+      "args": ["-y", "tsx", "/absolute/path/to/sst-mcp/mcp-server.ts"]
     }
   }
 }

@@ -4,20 +4,61 @@
 
 - Node.js 20+ or Bun
 - An SST project (or create one with `npx create-sst`)
-- MCP-compatible client (Cursor, Kiro CLI, Claude Desktop, etc.)
+- MCP-compatible client (Kiro CLI, Kiro IDE, Cursor, Claude Desktop, etc.)
 
 ## Installation
 
-### 1. Install Dependencies
+### For npx Users (Recommended)
+
+No installation needed! Just configure your MCP client to use `npx`:
+
+```bash
+# The MCP client will automatically run:
+npx -y tsx /absolute/path/to/sst-mcp/mcp-server.ts
+```
+
+### For Local Development
+
+If you want to modify the server:
 
 ```bash
 cd /path/to/sst-mcp
 npm install
 ```
 
-### 2. Configure Your MCP Client
+## Configuration
 
-#### For Cursor
+### For Kiro CLI
+
+Add to `~/.kiro/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "sst-mcp": {
+      "command": "npx",
+      "args": ["-y", "tsx", "/absolute/path/to/sst-mcp/mcp-server.ts"]
+    }
+  }
+}
+```
+
+### For Kiro IDE
+
+Add to your Kiro IDE MCP settings:
+
+```json
+{
+  "mcpServers": {
+    "sst-mcp": {
+      "command": "npx",
+      "args": ["-y", "tsx", "/absolute/path/to/sst-mcp/mcp-server.ts"]
+    }
+  }
+}
+```
+
+### For Cursor
 
 Add to `.cursor/config.json`:
 
@@ -26,28 +67,13 @@ Add to `.cursor/config.json`:
   "mcpServers": {
     "sst-mcp": {
       "command": "npx",
-      "args": ["tsx", "/absolute/path/to/sst-mcp/mcp-server.ts"]
+      "args": ["-y", "tsx", "/absolute/path/to/sst-mcp/mcp-server.ts"]
     }
   }
 }
 ```
 
-#### For Kiro CLI
-
-Add to your Kiro MCP configuration:
-
-```json
-{
-  "mcpServers": {
-    "sst-mcp": {
-      "command": "npx",
-      "args": ["tsx", "/absolute/path/to/sst-mcp/mcp-server.ts"]
-    }
-  }
-}
-```
-
-#### For Claude Desktop
+### For Claude Desktop
 
 Add to `claude_desktop_config.json`:
 
@@ -56,13 +82,15 @@ Add to `claude_desktop_config.json`:
   "mcpServers": {
     "sst-mcp": {
       "command": "npx",
-      "args": ["tsx", "/absolute/path/to/sst-mcp/mcp-server.ts"]
+      "args": ["-y", "tsx", "/absolute/path/to/sst-mcp/mcp-server.ts"]
     }
   }
 }
 ```
 
-### 3. Verify Installation
+**Important**: Replace `/absolute/path/to/sst-mcp/mcp-server.ts` with the actual path on your machine.
+
+## Verify Installation
 
 Ask your AI agent:
 ```
