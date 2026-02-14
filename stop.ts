@@ -2,6 +2,7 @@
 
 import { readFileSync, unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
+import { SSTConfig } from './config.js';
 
 interface StopOptions {
   projectRoot: string;
@@ -22,7 +23,7 @@ function parseArgs(): StopOptions {
 }
 
 async function stopSST(projectRoot: string): Promise<void> {
-  const pidFilePath = join(projectRoot, '.sst', 'sst-dev.pid');
+  const pidFilePath = SSTConfig.getPIDPath(projectRoot);
   
   // Check if PID file exists
   if (!existsSync(pidFilePath)) {

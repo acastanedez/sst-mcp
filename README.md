@@ -6,9 +6,21 @@ A Model Context Protocol (MCP) server that wraps the [SST](https://sst.dev) deve
 
 ### Features
 
-• `start-sst-dev` – Launches `sst dev --mode=mono`, writes a PID file to `.sst/sst-dev.pid` and mirrors all output to `.sst/sst-mcp.log`.
+• `start-sst-dev` – Launches `sst dev --mode=mono` (LIVE MODE), writes a PID file to `.sst/sst-dev.pid` and mirrors all output to `.sst/sst-mcp.log`.
 • `stop-sst-dev` – Gracefully stops the running SST dev process (falls back to `SIGKILL` if necessary).
-• `get-sst-status` – Checks whether an SST dev process is currently running.
+• `get-sst-status` – Returns detailed JSON status including PID, uptime, and last log entry.
+• `sst-deploy` – Runs `npx sst deploy --stage <stage>` to deploy infrastructure and code changes to AWS.
+• `sst-restart-for-infra` – Full workflow: stop dev → deploy → restart dev (for infrastructure changes).
+• `get-sst-logs` – Get the last N lines from the log file for quick status checks.
+• `get-sst-errors` – Extract only error messages from logs using pattern matching.
+• `list-sst-resources` – List all deployed resources (APIs, functions, buckets) by parsing SST metadata.
+• `list-sst-stages` – Show all deployed stages in the workspace.
+• `remove-sst-stage` – Remove a deployed stage using `sst remove --stage <stage>`.
+• `get-sst-env` – Read current environment variables from env.sh.
+• `set-sst-env` – Update environment variables in env.sh (triggers auto-restart if dev is running).
+• `invoke-sst-function` – Test Lambda functions directly using `sst shell`.
+• `cleanup-sst` – Remove .sst directory, PID files, and logs for a fresh start.
+• `validate-sst-workspace` – Check if directory is a valid SST project.
 • `sst-debug` – Outputs useful paths and environment information for troubleshooting.
 • Automatic restart when `env.sh` changes.
 

@@ -8,6 +8,7 @@ import path from 'path';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import fs from 'fs';
+import { SSTConfig } from './config.js';
 
 // Parse command line arguments for project root
 const argv = yargs(hideBin(process.argv))
@@ -21,8 +22,8 @@ const argv = yargs(hideBin(process.argv))
   .parseSync();
 
 const projectRoot = path.resolve(argv.projectRoot as string);
-const logFilePath = path.join(projectRoot, '.sst/sst-mcp.log');
-const envFilePath = path.join(projectRoot, 'env.sh');
+const logFilePath = SSTConfig.getLogPath(projectRoot);
+const envFilePath = SSTConfig.getEnvPath(projectRoot);
 
 let childProcess: ChildProcess | null = null;
 
@@ -73,18 +74,26 @@ async function startProcess() {
     
     console.log('Starting SST dev process...');
     
-    // Check for existing SST server before starting
-    const sstDir = path.join(projectRoot, '.sst');
+    // Clean up stale SST server files before starting
+    const sstDir = SSTConfig.getSSTDir(projectRoot);
     if (fs.existsSync(sstDir)) {
         const files = fs.readdirSync(sstDir);
-        const serverFile = files.find(f => f.endsWith('.server'));
-        if (serverFile) {
-            console.error(`Error: Detected running SST server (file: ${path.join(sstDir, serverFile)}). Please stop the running SST server before starting the MCP server.`);
-            process.exit(1);
+        const serverFiles = files.filter(f => f.endsWith('.server'));
+        if (serverFiles.length > 0) {
+            console.log(`Found ${serverFiles.length} stale server file(s), cleaning up...`);
+            for (const serverFile of serverFiles) {
+                const serverFilePath = path.join(sstDir, serverFile);
+                try {
+                    fs.unlinkSync(serverFilePath);
+                    console.log(`Removed stale server file: ${serverFile}`);
+                } catch (err) {
+                    console.warn(`Failed to remove ${serverFile}:`, err);
+                }
+            }
         }
     }
 
-    childProcess = spawn('npx', ['sst', 'dev', '--mode=mono'], {
+    childProcess = spawn(SSTConfig.NPX_COMMAND, [SSTConfig.SST_COMMAND, ...SSTConfig.SST_DEV_ARGS], {
         stdio: ['pipe', 'pipe', 'pipe'],
         cwd: projectRoot,
         env: {
@@ -95,7 +104,7 @@ async function startProcess() {
 
     // Record the PID of the spawned process
     if (childProcess.pid) {
-        const pidFilePath = path.join(projectRoot, '.sst', 'sst-dev.pid');
+        const pidFilePath = SSTConfig.getPIDPath(projectRoot);
         try {
             fs.writeFileSync(pidFilePath, String(childProcess.pid));
         } catch (err) {
@@ -121,7 +130,7 @@ async function startProcess() {
         console.log(`Process exited with code: ${code}`);
         logStream.end();
         // Remove the PID file on exit
-        const pidFilePath = path.join(projectRoot, '.sst', 'sst-dev.pid');
+        const pidFilePath = SSTConfig.getPIDPath(projectRoot);
         try {
             if (fs.existsSync(pidFilePath)) {
                 fs.unlinkSync(pidFilePath);
